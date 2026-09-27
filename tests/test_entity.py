@@ -4,6 +4,7 @@ from pathlib import Path
 
 from custom_components.extended_openai_conversation.entity import (
     _convert_content_to_param,
+    _extract_extra_content,
     _render_extra_body,
     encode_attachments,
 )
@@ -117,6 +118,78 @@ def test_assistant_tool_call_without_text_has_content_key():
 
     assert len(messages) == 1
     assert messages[0]["content"] is None
+
+
+def test_assistant_tool_call_preserves_provider_extra_content():
+    """Opaque provider metadata stored in native is re-attached to the tool call."""
+    content = conversation.AssistantContent(
+        agent_id="test_agent",
+        content=None,
+        tool_calls=[
+            llm.ToolInput(
+                id="call_1",
+                tool_name="turn_on_light",
+                tool_args={"entity_id": "light.living_room"},
+            )
+        ],
+        native={
+            "tool_call_extra_content_by_id": {
+                "call_1": {
+                    "google": {
+                        "thought_signature": "encrypted-signature",
+                    }
+                }
+            }
+        },
+    )
+
+    messages = _convert_content_to_param([content])
+
+    tool_call = messages[0]["tool_calls"][0]
+    assert tool_call["extra_content"] == {
+        "google": {
+            "thought_signature": "encrypted-signature",
+        }
+    }
+
+
+def test_assistant_tool_call_without_provider_metadata_unchanged():
+    """Standard OpenAI tool calls do not gain provider-specific fields."""
+    content = conversation.AssistantContent(
+        agent_id="test_agent",
+        content=None,
+        tool_calls=[
+            llm.ToolInput(
+                id="call_1",
+                tool_name="turn_on_light",
+                tool_args={"entity_id": "light.living_room"},
+            )
+        ],
+    )
+
+    messages = _convert_content_to_param([content])
+
+    assert "extra_content" not in messages[0]["tool_calls"][0]
+
+
+def test_extract_extra_content_from_model_extra():
+    """Unknown SDK response fields can be recovered from model_extra."""
+
+    class ResponsePart:
+        extra_content = None
+        model_extra = {
+            "extra_content": {
+                "google": {
+                    "thought_signature": "encrypted-signature",
+                }
+            }
+        }
+
+    assert _extract_extra_content(ResponsePart()) == {
+        "google": {
+            "thought_signature": "encrypted-signature",
+        }
+    }
 
 
 def test_assistant_text_only_content_unchanged():
