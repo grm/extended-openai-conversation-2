@@ -521,6 +521,12 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
     ]:
         """Transform OpenAI stream to Home Assistant format."""
         current_tool_calls: dict[int, dict[str, Any]] = {}
+        # Collect provider metadata across the whole response and attach it
+        # once. HA only allows AssistantContent.native to be set a single time
+        # per message; yielding native on every tool_calls finish_reason would
+        # raise RuntimeError on loosely compatible servers that emit that
+        # finish reason more than once.
+        tool_call_extra_content_by_id: dict[str, dict[str, Any]] = {}
         first_chunk = True
 
         async for chunk in result:
@@ -594,7 +600,6 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
             if current_tool_calls and (choice.finish_reason in {"tool_calls", "stop"}):
                 # Yield all accumulated tool calls (marked as external since we handle them ourselves)
                 tool_calls_list = []
-                tool_call_extra_content_by_id: dict[str, dict[str, Any]] = {}
                 for idx in sorted(current_tool_calls.keys()):
                     tool_call = current_tool_calls[idx]
                     try:
@@ -615,16 +620,7 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
                         )
                     )
                 if tool_calls_list:
-                    tool_calls_delta: conversation.AssistantContentDeltaDict = {
-                        "tool_calls": tool_calls_list
-                    }
-                    if tool_call_extra_content_by_id:
-                        tool_calls_delta["native"] = {
-                            _NATIVE_TOOL_CALL_EXTRA_CONTENT_KEY: (
-                                tool_call_extra_content_by_id
-                            )
-                        }
-                    yield tool_calls_delta
+                    yield {"tool_calls": tool_calls_list}
                 current_tool_calls.clear()
             if choice.finish_reason == "length":
                 raise TokenLengthExceededError(
@@ -633,6 +629,13 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
 
             if choice.finish_reason == "stop":
                 break
+
+        if not first_chunk and tool_call_extra_content_by_id:
+            yield {
+                "native": {
+                    _NATIVE_TOOL_CALL_EXTRA_CONTENT_KEY: tool_call_extra_content_by_id
+                }
+            }
 
     async def _execute_function_tool(
         self,
